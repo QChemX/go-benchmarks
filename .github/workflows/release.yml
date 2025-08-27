@@ -18,7 +18,6 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v5
-        # the latest stable Go
 
       - name: Get previous release tag
         id: prev_tag
@@ -31,20 +30,23 @@ jobs:
       - name: Get latest commit message
         id: commit_msg
         run: |
-          msg=$(git log -1 --pretty=%B)
+          # 使用多行安全写入
+          git log -1 --pretty=%B > commit_message.txt
           echo "commit_msg<<EOF" >> $GITHUB_ENV
-          echo "$msg" >> $GITHUB_ENV
+          cat commit_message.txt >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
       - name: Calculate next version (semantic)
         id: next_tag
         shell: bash
         run: |
+          # 安全读取多行环境变量
+          msg="$(cat <<< "${{ env.commit_msg }}")"
           prev="${{ env.prev_tag }}"
-          msg="${{ env.commit_msg }}"
           echo "Previous tag: $prev"
           echo "Commit message: $msg"
 
+          # 初始版本号 v0.1.0
           if [[ "$prev" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             major=${BASH_REMATCH[1]}
             minor=${BASH_REMATCH[2]}
@@ -55,6 +57,7 @@ jobs:
             patch=0
           fi
 
+          # 语义化版本规则
           if [[ "$msg" == *"BREAKING CHANGE:"* ]]; then
             major=$((major+1))
             minor=0
@@ -74,6 +77,7 @@ jobs:
         id: release_notes
         shell: bash
         run: |
+          # commit range 从上一个 release 到 HEAD
           if [ "${{ env.prev_tag }}" = "v0.0.0" ]; then
             range=$(git rev-list --max-parents=0 HEAD)..HEAD
           else
