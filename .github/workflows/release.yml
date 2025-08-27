@@ -32,13 +32,16 @@ jobs:
         id: commit_msg
         run: |
           msg=$(git log -1 --pretty=%B)
-          echo "commit_msg=$msg" >> $GITHUB_ENV
+          echo "commit_msg<<EOF" >> $GITHUB_ENV
+          echo "$msg" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
 
       - name: Calculate next version (semantic)
         id: next_tag
+        shell: bash
         run: |
-          prev=${{ env.prev_tag }}
-          msg=${{ env.commit_msg }}
+          prev="${{ env.prev_tag }}"
+          msg="${{ env.commit_msg }}"
           echo "Previous tag: $prev"
           echo "Commit message: $msg"
 
@@ -47,7 +50,9 @@ jobs:
             minor=${BASH_REMATCH[2]}
             patch=${BASH_REMATCH[3]}
           else
-            major=0; minor=0; patch=0
+            major=0
+            minor=1
+            patch=0
           fi
 
           if [[ "$msg" == *"BREAKING CHANGE:"* ]]; then
@@ -65,6 +70,22 @@ jobs:
           echo "next_tag=$next" >> $GITHUB_ENV
           echo "Next tag: $next"
 
+      - name: Generate release notes
+        id: release_notes
+        shell: bash
+        run: |
+          if [ "${{ env.prev_tag }}" = "v0.0.0" ]; then
+            range=$(git rev-list --max-parents=0 HEAD)..HEAD
+          else
+            range=${{ env.prev_tag }}..HEAD
+          fi
+          echo "Commit range for notes: $range"
+
+          notes=$(git log $range --pretty=format:'- %s (%an)')
+          echo "release_notes<<EOF" >> $GITHUB_ENV
+          echo "$notes" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Build binaries
         run: |
           mkdir -p dist
@@ -79,5 +100,6 @@ jobs:
           tag_name: ${{ env.next_tag }}
           name: Release ${{ env.next_tag }}
           files: dist/*
+          body: ${{ env.release_notes }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
