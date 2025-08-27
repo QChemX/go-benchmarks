@@ -1,0 +1,83 @@
+name: Build and Release Go Binaries
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        # the latest stable Go
+
+      - name: Get previous release tag
+        id: prev_tag
+        run: |
+          tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || echo "v0.0.0")
+          echo "prev_tag=$tag" >> $GITHUB_ENV
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Get latest commit message
+        id: commit_msg
+        run: |
+          msg=$(git log -1 --pretty=%B)
+          echo "commit_msg=$msg" >> $GITHUB_ENV
+
+      - name: Calculate next version (semantic)
+        id: next_tag
+        run: |
+          prev=${{ env.prev_tag }}
+          msg=${{ env.commit_msg }}
+          echo "Previous tag: $prev"
+          echo "Commit message: $msg"
+
+          if [[ "$prev" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major=${BASH_REMATCH[1]}
+            minor=${BASH_REMATCH[2]}
+            patch=${BASH_REMATCH[3]}
+          else
+            major=0; minor=0; patch=0
+          fi
+
+          if [[ "$msg" == *"BREAKING CHANGE:"* ]]; then
+            major=$((major+1))
+            minor=0
+            patch=0
+          elif [[ "$msg" == feat:* ]]; then
+            minor=$((minor+1))
+            patch=0
+          else
+            patch=$((patch+1))
+          fi
+
+          next="v$major.$minor.$patch"
+          echo "next_tag=$next" >> $GITHUB_ENV
+          echo "Next tag: $next"
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o dist/benchmarks-windows-amd64.exe main.go
+          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o dist/benchmarks-linux-amd64 main.go
+          GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -o dist/benchmarks-darwin-amd64 main.go
+          GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o dist/benchmarks-darwin-arm64 main.go
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.next_tag }}
+          name: Release ${{ env.next_tag }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
