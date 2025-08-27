@@ -2,108 +2,171 @@ name: Build and Release Go Binaries
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
-  build:
+  build-and-release:
     runs-on: ubuntu-latest
 
     permissions:
       contents: write
 
+    env:
+      APP_NAME: benchmarks
+      DIST_DIR: dist
+      # 纯 Go：禁用 cgo，避免任何 C 依赖
+      CGO_ENABLED: "0"
+      # 纯 Go 的网络与用户查询实现，避免 glibc 解析器等
+      BUILD_TAGS: 'netgo,osusergo'
+      # 通用优化与缩小体积（去符号、去 buildid）
+      COMMON_LDFLAGS: '-s -w -buildid='
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史以生成 release notes
 
-      - name: Set up Go
+      - name: Set up Go (latest stable)
         uses: actions/setup-go@v5
+        # 不指定版本 -> 使用最新稳定版
 
-      - name: Get previous release tag
-        id: prev_tag
+      - name: Go env & deps
         run: |
-          tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || echo "v0.0.0")
-          echo "prev_tag=$tag" >> $GITHUB_ENV
+          go env
+          go mod download
+
+      - name: Get previous release tag (or default)
+        id: prev_tag
         env:
           GH_TOKEN: ${{ github.token }}
+        run: |
+          # 若无 release，回退为 v0.0.0
+          prev_tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || true)
+          if [ -z "$prev_tag" ]; then prev_tag="v0.0.0"; fi
+          echo "prev_tag=$prev_tag" >> $GITHUB_ENV
 
-      - name: Get latest commit message
+      - name: Read latest commit message (safe)
         id: commit_msg
         run: |
-          # 使用多行安全写入
-          git log -1 --pretty=%B > commit_message.txt
-          echo "commit_msg<<EOF" >> $GITHUB_ENV
-          cat commit_message.txt >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          git log -1 --pretty=%B > .commit_message.txt
+          {
+            echo 'commit_msg<<EOF'
+            cat .commit_message.txt
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
 
       - name: Calculate next version (semantic)
-        id: next_tag
+        id: semver
         shell: bash
         run: |
-          # 安全读取多行环境变量
-          msg="$(cat <<< "${{ env.commit_msg }}")"
           prev="${{ env.prev_tag }}"
-          echo "Previous tag: $prev"
-          echo "Commit message: $msg"
+          # 安全读取多行 commit message
+          msg="$(cat <<< "${{ env.commit_msg }}")"
 
-          # 初始版本号 v0.1.0
+          # 默认初始版本 v0.1.0
           if [[ "$prev" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             major=${BASH_REMATCH[1]}
             minor=${BASH_REMATCH[2]}
             patch=${BASH_REMATCH[3]}
           else
-            major=0
-            minor=1
-            patch=0
+            major=0; minor=1; patch=0
           fi
 
           # 语义化版本规则
-          if [[ "$msg" == *"BREAKING CHANGE:"* ]]; then
-            major=$((major+1))
-            minor=0
-            patch=0
-          elif [[ "$msg" == feat:* ]]; then
-            minor=$((minor+1))
-            patch=0
+          if grep -qiE 'BREAKING CHANGE:' <<< "$msg"; then
+            major=$((major+1)); minor=0; patch=0
+          elif grep -qiE '^feat:' <<< "$msg"; then
+            minor=$((minor+1)); patch=0
           else
             patch=$((patch+1))
           fi
 
-          next="v$major.$minor.$patch"
+          next="v${major}.${minor}.${patch}"
+          echo "Next tag will be: $next"
           echo "next_tag=$next" >> $GITHUB_ENV
-          echo "Next tag: $next"
 
       - name: Generate release notes
-        id: release_notes
+        id: notes
         shell: bash
         run: |
-          # commit range 从上一个 release 到 HEAD
           if [ "${{ env.prev_tag }}" = "v0.0.0" ]; then
-            range=$(git rev-list --max-parents=0 HEAD)..HEAD
+            range="$(git rev-list --max-parents=0 HEAD)..HEAD"
           else
-            range=${{ env.prev_tag }}..HEAD
+            range="${{ env.prev_tag }}..HEAD"
           fi
-          echo "Commit range for notes: $range"
+          # 生成简洁的变更列表
+          notes="$(git log $range --pretty=format:'- %s (%an)')"
+          {
+            echo 'release_notes<<EOF'
+            echo "$notes"
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
 
-          notes=$(git log $range --pretty=format:'- %s (%an)')
-          echo "release_notes<<EOF" >> $GITHUB_ENV
-          echo "$notes" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-      - name: Build binaries
+      - name: Build cross-platform static-ish binaries
+        shell: bash
         run: |
-          mkdir -p dist
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o dist/benchmarks-windows-amd64.exe main.go
-          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o dist/benchmarks-linux-amd64 main.go
-          GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -o dist/benchmarks-darwin-amd64 main.go
-          GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -o dist/benchmarks-darwin-arm64 main.go
+          set -euo pipefail
+          mkdir -p "${DIST_DIR}"
 
-      - name: Create Release
+          # 统一主程序入口（如需调整请改这里）
+          ENTRY="./main.go"
+          if [ ! -f "$ENTRY" ]; then
+            # 若你的入口在 cmd/benchmarks/main.go，请改为：
+            # ENTRY="./cmd/benchmarks/main.go"
+            echo "ERROR: $ENTRY not found. Please adjust ENTRY path in workflow."
+            exit 1
+          fi
+
+          # Linux: 尽量强制静态链接
+          linux_ldflags='-extldflags "-static"'
+          # Windows/macOS: 纯 Go（CGO=0）即可，无系统 C 运行库依赖
+          win_ldflags=''
+          darwin_ldflags=''
+
+          # Windows amd64
+          GOOS=windows GOARCH=amd64 \
+          go build -trimpath -tags "${BUILD_TAGS}" \
+            -ldflags "${COMMON_LDFLAGS} ${win_ldflags}" \
+            -o "${DIST_DIR}/${APP_NAME}-windows-amd64.exe" \
+            "$ENTRY"
+
+          # Linux amd64 (static)
+          GOOS=linux GOARCH=amd64 \
+          go build -trimpath -tags "${BUILD_TAGS}" \
+            -ldflags "${COMMON_LDFLAGS} ${linux_ldflags}" \
+            -o "${DIST_DIR}/${APP_NAME}-linux-amd64" \
+            "$ENTRY"
+
+          # macOS amd64
+          GOOS=darwin GOARCH=amd64 \
+          go build -trimpath -tags "${BUILD_TAGS}" \
+            -ldflags "${COMMON_LDFLAGS} ${darwin_ldflags}" \
+            -o "${DIST_DIR}/${APP_NAME}-darwin-amd64" \
+            "$ENTRY"
+
+          # macOS arm64
+          GOOS=darwin GOARCH=arm64 \
+          go build -trimpath -tags "${BUILD_TAGS}" \
+            -ldflags "${COMMON_LDFLAGS} ${darwin_ldflags}" \
+            -o "${DIST_DIR}/${APP_NAME}-darwin-arm64" \
+            "$ENTRY"
+
+          # 可选：赋予可执行权限（Linux/macOS 产物）
+          chmod +x "${DIST_DIR}/${APP_NAME}-linux-amd64" || true
+          chmod +x "${DIST_DIR}/${APP_NAME}-darwin-amd64" || true
+          chmod +x "${DIST_DIR}/${APP_NAME}-darwin-arm64" || true
+
+      - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.next_tag }}
           name: Release ${{ env.next_tag }}
-          files: dist/*
           body: ${{ env.release_notes }}
+          files: |
+            dist/benchmarks-windows-amd64.exe
+            dist/benchmarks-linux-amd64
+            dist/benchmarks-darwin-amd64
+            dist/benchmarks-darwin-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
