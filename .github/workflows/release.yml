@@ -2,85 +2,86 @@ name: Build and Release Go Binaries
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
-  # --- Step 1: version calculation (only runs once) ---
-  versioning:
+  get_version:
     runs-on: ubuntu-latest
     outputs:
-      next_tag: ${{ steps.semver.outputs.next_tag }}
+      next_tag: ${{ steps.calc.outputs.next_tag }}
       release_notes: ${{ steps.notes.outputs.release_notes }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Get previous release tag (or default)
-        id: prev_tag
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Fetch tags
+        run: git fetch --tags
+
+      - name: Get previous tag
+        id: prev
         run: |
-          prev_tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || true)
-          if [ -z "$prev_tag" ]; then prev_tag="v0.0.0"; fi
-          echo "prev_tag=$prev_tag" >> $GITHUB_ENV
-          echo "prev_tag=$prev_tag"
+          prev=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "prev_tag=$prev" >> $GITHUB_ENV
+          echo "Previous tag: $prev"
 
       - name: Read latest commit message
-        id: commit_msg
+        id: msg
         run: |
-          git log -1 --pretty=%B > .commit_message.txt
-          msg="$(cat .commit_message.txt)"
-          echo "msg<<EOF" >> $GITHUB_ENV
-          echo "$msg" >> $GITHUB_ENV
+          commit_msg="$(git log -1 --pretty=%B)"
+          echo "commit_msg<<EOF" >> $GITHUB_ENV
+          echo "$commit_msg" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Calculate next version (semantic)
-        id: semver
+      - name: Calculate next version
+        id: calc
         run: |
           prev="${{ env.prev_tag }}"
-          msg="$(cat <<< "${{ env.msg }}")"
+          msg="${{ env.commit_msg }}"
 
-          if [[ "$prev" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+          if [[ -z "$prev" || "$prev" == "" ]]; then
+            next="v0.1.0"
+          elif [[ "$prev" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             major=${BASH_REMATCH[1]}
             minor=${BASH_REMATCH[2]}
             patch=${BASH_REMATCH[3]}
+
+            if [[ "$msg" == *"BREAKING CHANGE:"* ]]; then
+              major=$((major+1))
+              minor=0
+              patch=0
+            elif [[ "$msg" == feat:* ]]; then
+              minor=$((minor+1))
+              patch=0
+            else
+              patch=$((patch+1))
+            fi
+
+            next="v$major.$minor.$patch"
           else
-            major=0; minor=1; patch=0
+            echo "Invalid previous tag format: $prev"
+            exit 1
           fi
 
-          if grep -qiE 'BREAKING CHANGE:' <<< "$msg"; then
-            major=$((major+1)); minor=0; patch=0
-          elif grep -qiE '^feat:' <<< "$msg"; then
-            minor=$((minor+1)); patch=0
-          else
-            patch=$((patch+1))
-          fi
-
-          next="v${major}.${minor}.${patch}"
-          echo "next_tag=$next" >> $GITHUB_ENV
-          echo "::set-output name=next_tag::$next"
+          echo "next_tag=$next" >> $GITHUB_OUTPUT
+          echo "Next tag: $next"
 
       - name: Generate release notes
         id: notes
         run: |
-          if [ "${{ env.prev_tag }}" = "v0.0.0" ]; then
+          if [[ -z "$prev" || "$prev" == "" ]]; then
             range="$(git rev-list --max-parents=0 HEAD)..HEAD"
           else
-            range="${{ env.prev_tag }}..HEAD"
+            range="$prev..HEAD"
           fi
           notes="$(git log $range --pretty=format:'- %s (%an)')"
-          {
-            echo "release_notes<<EOF"
-            echo "$notes"
-            echo "EOF"
-          } >> $GITHUB_ENV
+          echo "release_notes<<EOF" >> $GITHUB_ENV
+          echo "$notes" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
           echo "::set-output name=release_notes::$notes"
 
-  # --- Step 2: build matrix ---
   build:
-    needs: versioning
+    needs: get_version
     strategy:
       matrix:
         include:
@@ -96,7 +97,7 @@ jobs:
             goos: darwin
             goarch: amd64
             ext: ""
-          - os: macos-latest
+          - os: macos-14
             goos: darwin
             goarch: arm64
             ext: ""
@@ -112,6 +113,8 @@ jobs:
 
       - name: Set up Go
         uses: actions/setup-go@v5
+        with:
+          go-version: stable
 
       - name: Go env & deps
         run: |
@@ -127,32 +130,28 @@ jobs:
             exit 1
           fi
 
-          # Linux 要求静态链接
           ldflags="${COMMON_LDFLAGS}"
           if [ "${{ matrix.goos }}" = "linux" ]; then
             ldflags="$ldflags -extldflags \"-static\""
           fi
 
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-          go build -trimpath -tags "${BUILD_TAGS}" \
+            go build -trimpath -tags "${BUILD_TAGS}" \
             -ldflags "$ldflags" \
-            -o "dist/${APP_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}" \
+            -o "dist/${APP_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext}}" \
             "$ENTRY"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
 
-  # --- Step 3: publish release ---
   release:
-    needs: [versioning, build]
+    needs: [get_version, build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist
@@ -160,9 +159,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.versioning.outputs.next_tag }}
-          name: Release ${{ needs.versioning.outputs.next_tag }}
-          body: ${{ needs.versioning.outputs.release_notes }}
-          files: dist/**/*
+          tag_name: ${{ needs.get_version.outputs.next_tag }}
+          name: Release ${{ needs.get_version.outputs.next_tag }}
+          body: ${{ needs.get_version.outputs.release_notes }}
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
