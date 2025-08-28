@@ -1,4 +1,4 @@
-name: Build and Release Go Binaries
+name: Release
 
 on:
   push:
@@ -11,37 +11,30 @@ jobs:
     outputs:
       next_tag: ${{ steps.calc.outputs.next_tag }}
       release_notes: ${{ steps.notes.outputs.release_notes }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Fetch tags
-        run: git fetch --tags
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Get previous tag
         id: prev
         run: |
-          prev=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          echo "prev_tag=$prev" >> $GITHUB_ENV
+          prev_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "prev_tag=$prev_tag" >> $GITHUB_OUTPUT
 
       - name: Read latest commit message safely
         id: msg
         run: |
-          git log -1 --pretty=%B > .commit_message.txt
-          {
-            echo "commit_msg<<EOF"
-            cat .commit_message.txt
-            echo "EOF"
-          } >> $GITHUB_ENV
+          commit_msg="$(git log -1 --pretty=%B)"
+          echo "commit_msg<<EOF" >> $GITHUB_OUTPUT
+          echo "$commit_msg" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Calculate next version
         id: calc
         shell: bash
         run: |
-          prev="${{ env.prev_tag }}"
-          msg="${{ env.commit_msg }}"
+          prev="${{ steps.prev.outputs.prev_tag }}"
+          msg="${{ steps.msg.outputs.commit_msg }}"
 
           if [[ -z "$prev" || "$prev" == "" ]]; then
             next="v0.1.0"
@@ -50,13 +43,10 @@ jobs:
             minor=${BASH_REMATCH[2]}
             patch=${BASH_REMATCH[3]}
 
-            if grep -qi "BREAKING CHANGE:" <<< "$msg"; then
-              major=$((major+1))
-              minor=0
-              patch=0
-            elif grep -qi "^feat:" <<< "$msg"; then
-              minor=$((minor+1))
-              patch=0
+            if [[ "$msg" == *"BREAKING CHANGE:"* ]]; then
+              major=$((major+1)); minor=0; patch=0
+            elif [[ "$msg" == feat:* ]]; then
+              minor=$((minor+1)); patch=0
             else
               patch=$((patch+1))
             fi
@@ -73,122 +63,60 @@ jobs:
         id: notes
         shell: bash
         run: |
+          prev="${{ steps.prev.outputs.prev_tag }}"
           if [[ -z "$prev" || "$prev" == "" ]]; then
             range="$(git rev-list --max-parents=0 HEAD)..HEAD"
           else
             range="$prev..HEAD"
           fi
+
           notes="$(git log $range --pretty=format:'- %s (%an)')"
-          echo "release_notes<<EOF" >> $GITHUB_ENV
-          echo "$notes" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$notes" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
   build:
     needs: get_version
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - os: ubuntu-latest
-            goos: linux
-            goarch: amd64
-            ext: ""
-          - os: windows-latest
-            goos: windows
-            goarch: amd64
-            ext: ".exe"
-          - os: macos-latest
-            goos: darwin
-            goarch: amd64
-            ext: ""
-          - os: macos-latest
-            goos: darwin
-            goarch: arm64
-            ext: ""
-    runs-on: ${{ matrix.os }}
-    env:
-      APP_NAME: benchmarks
-      CGO_ENABLED: "0"
-      BUILD_TAGS: "netgo osusergo"
-      COMMON_LDFLAGS: "-s -w -buildid="
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
 
-      - name: Set up Go
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: "1.22"
 
-      - name: Go env & deps
-        run: |
-          go env
-          go mod download
-
-      - name: Build binary
-        shell: bash
+      - name: Build
         run: |
           mkdir -p dist
-          ENTRY_FILES="./main.go ./cpu_bench.go"
-
-          for f in $ENTRY_FILES; do
-            if [ ! -f "$f" ]; then
-              echo "ERROR: $f not found"
-              exit 1
-            fi
-          done
-
-          ldflags="${COMMON_LDFLAGS}"
-          if [ "${{ matrix.goos }}" = "linux" ]; then
-            ldflags="$ldflags -extldflags \"-static\""
-          fi
-
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -tags "${BUILD_TAGS}" \
-            -ldflags "$ldflags" \
-            -o "dist/${APP_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext}}" \
-            $ENTRY_FILES
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o dist/app-${{ matrix.goos }}-${{ matrix.goarch }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: app-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
 
   release:
     needs: [get_version, build]
     runs-on: ubuntu-latest
+
     steps:
-      - name: Download Linux artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: binaries-linux-amd64
           path: dist
 
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries-windows-amd64
-          path: dist
-
-      - name: Download macOS amd64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries-darwin-amd64
-          path: dist
-
-      - name: Download macOS arm64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: binaries-darwin-arm64
-          path: dist
-
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.get_version.outputs.next_tag }}
           name: Release ${{ needs.get_version.outputs.next_tag }}
           body: ${{ needs.get_version.outputs.release_notes }}
-          files: dist/*
+          files: dist/**/*
         env:
-          # 必须使用有 repo 权限的 token
-          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
