@@ -1,9 +1,7 @@
 package main
 
 import (
-	"fmt"
 	"runtime"
-	"testing"
 	"time"
 )
 
@@ -38,34 +36,34 @@ func heavyComputation(n int) float64 {
 	return result[n-1][n-1]
 }
 
-// test single-core performance and output GFLOPS
-func BenchmarkSingleCoreGFLOPS(b *testing.B) {
+// Run single-core benchmark and return GFLOPS
+func runSingleCore() float64 {
 	runtime.GOMAXPROCS(1)
 	n := 200
-	flops := float64(2 * n * n * n) // the number of floating-point operations
+	flops := float64(2 * n * n * n) // total FLOPs for one matrix multiplication
 
-	b.ResetTimer()
+	const iterations = 3
 	start := time.Now()
-	for i := 0; i < b.N; i++ {
+	for i := 0; i < iterations; i++ {
 		_ = heavyComputation(n)
 	}
 	elapsed := time.Since(start).Seconds()
-	gflops := flops * float64(b.N) / elapsed / 1e9
-	fmt.Printf("single-core GFLOPS: %.2f\n", gflops)
+	gflops := flops * float64(iterations) / elapsed / 1e9
+	return gflops
 }
 
-// test multi-core performance and output GFLOPS
-func BenchmarkMultiCoreGFLOPS(b *testing.B) {
+// Run multi-core benchmark and return GFLOPS
+func runMultiCore() float64 {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	n := 200
 	flops := float64(2 * n * n * n)
 
-	b.ResetTimer()
+	const iterations = 3
 	start := time.Now()
-	for i := 0; i < b.N; i++ {
+	for i := 0; i < iterations; i++ {
 		_ = heavyComputation(n)
 	}
 	elapsed := time.Since(start).Seconds()
-	gflops := flops * float64(b.N) / elapsed / 1e9
-	fmt.Printf("multi-core GFLOPS: %.2f\n", gflops)
+	gflops := flops * float64(iterations) / elapsed / 1e9
+	return gflops
 }
