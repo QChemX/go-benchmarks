@@ -154,9 +154,28 @@ jobs:
     needs: [get_version, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
+      - name: Download Linux artifact
         uses: actions/download-artifact@v4
         with:
+          name: binaries-linux-amd64
+          path: dist
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-windows-amd64
+          path: dist
+
+      - name: Download macOS amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-darwin-amd64
+          path: dist
+
+      - name: Download macOS arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-darwin-arm64
           path: dist
 
       - name: Create Release
@@ -167,4 +186,5 @@ jobs:
           body: ${{ needs.get_version.outputs.release_notes }}
           files: dist/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 必须使用拥有 repo 权限的 token，否则会 403
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
