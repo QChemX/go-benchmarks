@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Fetch tags
         run: git fetch --tags
@@ -80,7 +82,6 @@ jobs:
           echo "release_notes<<EOF" >> $GITHUB_ENV
           echo "$notes" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
-          echo "::set-output name=release_notes::$notes"
 
   build:
     needs: get_version
@@ -95,11 +96,11 @@ jobs:
             goos: windows
             goarch: amd64
             ext: ".exe"
-          - os: macos-13
+          - os: macos-latest
             goos: darwin
             goarch: amd64
             ext: ""
-          - os: macos-14
+          - os: macos-latest
             goos: darwin
             goarch: arm64
             ext: ""
@@ -127,11 +128,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          ENTRY="./main.go"
-          if [ ! -f "$ENTRY" ]; then
-            echo "ERROR: $ENTRY not found"
-            exit 1
-          fi
+          ENTRY_FILES="./main.go ./cpu_bench.go"
+
+          for f in $ENTRY_FILES; do
+            if [ ! -f "$f" ]; then
+              echo "ERROR: $f not found"
+              exit 1
+            fi
+          done
 
           ldflags="${COMMON_LDFLAGS}"
           if [ "${{ matrix.goos }}" = "linux" ]; then
@@ -142,7 +146,7 @@ jobs:
             go build -trimpath -tags "${BUILD_TAGS}" \
             -ldflags "$ldflags" \
             -o "dist/${APP_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext}}" \
-            "$ENTRY"
+            $ENTRY_FILES
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -186,5 +190,4 @@ jobs:
           body: ${{ needs.get_version.outputs.release_notes }}
           files: dist/*
         env:
-          # 必须使用拥有 repo 权限的 token，否则会 403
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
