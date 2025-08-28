@@ -25,7 +25,6 @@ jobs:
         run: |
           prev=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           echo "prev_tag=$prev" >> $GITHUB_ENV
-          echo "Previous tag: $prev"
 
       - name: Read latest commit message
         id: msg
@@ -59,7 +58,6 @@ jobs:
             else
               patch=$((patch+1))
             fi
-
             next="v$major.$minor.$patch"
           else
             echo "Invalid previous tag format: $prev"
@@ -67,7 +65,6 @@ jobs:
           fi
 
           echo "next_tag=$next" >> $GITHUB_OUTPUT
-          echo "Next tag: $next"
 
       - name: Generate release notes
         id: notes
