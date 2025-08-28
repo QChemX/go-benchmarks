@@ -35,6 +35,7 @@ jobs:
 
       - name: Calculate next version
         id: calc
+        shell: bash
         run: |
           prev="${{ env.prev_tag }}"
           msg="${{ env.commit_msg }}"
@@ -68,6 +69,7 @@ jobs:
 
       - name: Generate release notes
         id: notes
+        shell: bash
         run: |
           if [[ -z "$prev" || "$prev" == "" ]]; then
             range="$(git rev-list --max-parents=0 HEAD)..HEAD"
@@ -122,6 +124,7 @@ jobs:
           go mod download
 
       - name: Build binary
+        shell: bash
         run: |
           mkdir -p dist
           ENTRY="./main.go"
