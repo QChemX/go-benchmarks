@@ -26,13 +26,15 @@ jobs:
           prev=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           echo "prev_tag=$prev" >> $GITHUB_ENV
 
-      - name: Read latest commit message
+      - name: Read latest commit message safely
         id: msg
         run: |
-          commit_msg="$(git log -1 --pretty=%B)"
-          echo "commit_msg<<EOF" >> $GITHUB_ENV
-          echo "$commit_msg" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          git log -1 --pretty=%B > .commit_message.txt
+          {
+            echo "commit_msg<<EOF"
+            cat .commit_message.txt
+            echo "EOF"
+          } >> $GITHUB_ENV
 
       - name: Calculate next version
         id: calc
@@ -48,16 +50,17 @@ jobs:
             minor=${BASH_REMATCH[2]}
             patch=${BASH_REMATCH[3]}
 
-            if [[ "$msg" == *"BREAKING CHANGE:"* ]]; then
+            if grep -qi "BREAKING CHANGE:" <<< "$msg"; then
               major=$((major+1))
               minor=0
               patch=0
-            elif [[ "$msg" == feat:* ]]; then
+            elif grep -qi "^feat:" <<< "$msg"; then
               minor=$((minor+1))
               patch=0
             else
               patch=$((patch+1))
             fi
+
             next="v$major.$minor.$patch"
           else
             echo "Invalid previous tag format: $prev"
@@ -187,4 +190,5 @@ jobs:
           body: ${{ needs.get_version.outputs.release_notes }}
           files: dist/*
         env:
+          # 必须使用有 repo 权限的 token
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
