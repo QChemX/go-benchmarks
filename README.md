@@ -8,11 +8,43 @@ Test the performance of CPU using a CLI tool built in Go.
 
 ## Usage
 
-```bash
-$ ./benchmarks --help
-Usage of ./benchmarks-linux-amd64:
-  -iters int
-        number of iterations (default 3)
-  -n int
-        matrix size (N x N) (default 600)
+Check the usage of `benchmarks.exe`:
+
+```powershell
+> ./benchmarks.exe --help
+Usage of ./benchmarks.exe:
+  -t duration
+        Duration for each test phase (default 3s)
+```
+
+## Examples
+
+Run `benchmarks.exe` on Windows:
+
+```powershell
+> ./benchmarks.exe
+=================================================================
+ Go CPU Float64 Benchmark Tool (v0.2.0)
+-----------------------------------------------------------------
+ Arch         : amd64 / windows
+ Logical CPUs : 20
+ Precision    : Float64 (Double Precision)
+ Mode         : FMA Simulation (ILP Optimized)
+=================================================================
+
+[1/2] Running Single-Core Benchmark... Done.
+[2/2] Running Multi-Core Benchmark (20 Threads)... Done.
+
+=================================================================
+ BENCHMARK RESULTS
+=================================================================
+ Single-Core Performance :     193.19 GFLOPS
+ Multi-Core Performance  :    1266.15 GFLOPS
+-----------------------------------------------------------------
+ Multi-Core Scaling      :       6.55x
+=================================================================
+ Note: Results represent pure FP64 throughput in Go environment.
+ Values are approx. 60-80% of theoretical hardware limits due
+ to compiler auto-vectorization constraints.
+=================================================================
 ```
