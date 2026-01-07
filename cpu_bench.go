@@ -1,143 +1,82 @@
 package main
 
 import (
-	"runtime"
-	"sync"
 	"time"
 )
 
-type Mat struct {
-	data []float64
-	n    int
-}
+// RunCoreBenchmark runs a floating-point intensive workload for a specific duration.
+// It returns the total number of floating-point operations (FLOPs) performed.
+func RunCoreBenchmark(duration time.Duration) int64 {
+	// -------------------------------------------------------------------
+	// Core Parameters
+	// -------------------------------------------------------------------
+	// The batch size determines how many unrolled iterations run before checking time.
+	// We use 16 variables, each performing 1 multiplication and 1 addition (FMA).
+	// Total ops per inner loop: 16 vars * 2 ops (mul+add) = 32 ops.
+	// Total ops per batch: 32 ops * 1000 iterations = 32,000 FLOPs.
+	const batchSize = 1000
+	const flopsPerBatch = 16 * 2 * batchSize
 
-func newMatrix(n int) *Mat {
-	return &Mat{
-		data: make([]float64, n*n),
-		n:    n,
-	}
-}
+	// Initialize 16 independent registers (Float64).
+	// Using distinct initial values helps prevent compiler optimization from merging variables.
+	var a0, a1, a2, a3, a4, a5, a6, a7 float64 = 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7
+	var b0, b1, b2, b3, b4, b5, b6, b7 float64 = 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7
 
-func (m *Mat) at(i, j int) float64 {
-	return m.data[i*m.n+j]
-}
+	// Constants for the FMA operation
+	const mul float64 = 1.000000001
+	const add float64 = 0.000000001
 
-func (m *Mat) set(i, j int, v float64) {
-	m.data[i*m.n+j] = v
-}
+	var totalFlops int64 = 0
+	start := time.Now()
 
-// block matrix multiplication: C = A * B
-func matMulBlock(A, B, C *Mat, block int, parallel bool) {
-	n := A.n
-
-	// zero result
-	for i := range C.data {
-		C.data[i] = 0
-	}
-
-	worker := func(iStart, iEnd int) {
-		for ii := iStart; ii < iEnd; ii += block {
-			iMax := min(ii+block, n)
-			for jj := 0; jj < n; jj += block {
-				jMax := min(jj+block, n)
-				for kk := 0; kk < n; kk += block {
-					kMax := min(kk+block, n)
-					// block multiply
-					for i := ii; i < iMax; i++ {
-						for k := kk; k < kMax; k++ {
-							aik := A.at(i, k)
-							for j := jj; j < jMax; j++ {
-								C.data[i*n+j] += aik * B.at(k, j)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if parallel {
-		numCPU := runtime.NumCPU()
-		var wg sync.WaitGroup
-		chunk := (n + numCPU - 1) / numCPU
-		for c := 0; c < numCPU; c++ {
-			start := c * chunk
-			end := min(start+chunk, n)
-			if start >= n {
+	// -------------------------------------------------------------------
+	// Main Computational Loop
+	// -------------------------------------------------------------------
+	for {
+		// Check the duration periodically.
+		// To minimize the overhead of time.Since(), we only check every N batches.
+		if totalFlops%10000 == 0 {
+			if time.Since(start) >= duration {
 				break
 			}
-			wg.Add(1)
-			go func(si, ei int) {
-				defer wg.Done()
-				worker(si, ei)
-			}(start, end)
 		}
-		wg.Wait()
-	} else {
-		worker(0, n)
-	}
-}
 
-func heavyComputationBlock(A, B, C *Mat, block int, parallel bool) float64 {
-	matMulBlock(A, B, C, block, parallel)
-	return C.at(A.n-1, B.n-1)
-}
-
-func runSingleCore(n, iterations int) float64 {
-	runtime.GOMAXPROCS(1)
-	A := newMatrix(n)
-	B := newMatrix(n)
-	C := newMatrix(n)
-
-	// init
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
-			A.set(i, j, float64(i+j))
-			B.set(i, j, float64(i-j))
+		// Aggressive Loop Unrolling.
+		// The goal is to fill the CPU's execution ports with independent instructions,
+		// allowing Superscalar execution (doing multiple math ops per clock cycle).
+		for i := 0; i < batchSize; i++ {
+			// Simulating Fused Multiply-Add (FMA): result = a * mul + add
+			a0 = a0*mul + add
+			b0 = b0*mul + add
+			a1 = a1*mul + add
+			b1 = b1*mul + add
+			a2 = a2*mul + add
+			b2 = b2*mul + add
+			a3 = a3*mul + add
+			b3 = b3*mul + add
+			a4 = a4*mul + add
+			b4 = b4*mul + add
+			a5 = a5*mul + add
+			b5 = b5*mul + add
+			a6 = a6*mul + add
+			b6 = b6*mul + add
+			a7 = a7*mul + add
+			b7 = b7*mul + add
 		}
+
+		totalFlops += flopsPerBatch
 	}
 
-	block := 32
-	flops := float64(2*n*n*n) * float64(iterations)
-
-	start := time.Now()
-	for i := 0; i < iterations; i++ {
-		_ = heavyComputationBlock(A, B, C, block, false)
-	}
-	elapsed := time.Since(start).Seconds()
-
-	return flops / elapsed / 1e9
-}
-
-func runMultiCore(n, iterations int) float64 {
-	runtime.GOMAXPROCS(runtime.NumCPU())
-	A := newMatrix(n)
-	B := newMatrix(n)
-	C := newMatrix(n)
-
-	// init
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
-			A.set(i, j, float64(i+j))
-			B.set(i, j, float64(i-j))
-		}
+	// -------------------------------------------------------------------
+	// Prevent Dead Code Elimination (DCE)
+	// -------------------------------------------------------------------
+	// Go compilers are smart. If the result is never used, the compiler might remove the loop.
+	// We use a condition that is theoretically impossible to reach but unknown to the compiler at build time.
+	if a0 == 999999.999 {
+		// This block will never execute, but it forces the compiler to calculate all variables.
+		_ = a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 +
+			b0 + b1 + b2 + b3 + b4 + b5 + b6 + b7
 	}
 
-	block := 32
-	flops := float64(2*n*n*n) * float64(iterations)
-
-	start := time.Now()
-	for i := 0; i < iterations; i++ {
-		_ = heavyComputationBlock(A, B, C, block, true)
-	}
-	elapsed := time.Since(start).Seconds()
-
-	return flops / elapsed / 1e9
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return totalFlops
 }
