@@ -28,7 +28,7 @@ func main() {
 
 	// Print Header
 	printLine(separator)
-	fmt.Printf(" Go CPU Float64 Benchmark Tool (v0.2.0)\n")
+	fmt.Printf(" Go CPU Float64 Benchmark Tool (v0.1.2)\n")
 	printLine(thinSep)
 	fmt.Printf(" Arch         : %s / %s\n", runtime.GOARCH, runtime.GOOS)
 	fmt.Printf(" Logical CPUs : %d\n", numCPU)

@@ -10,7 +10,7 @@ Test the performance of CPU using a CLI tool built in Go.
 
 Check the usage of `benchmarks.exe`:
 
-```powershell
+```bash
 > ./benchmarks.exe --help
 Usage of ./benchmarks.exe:
   -t duration
@@ -21,7 +21,7 @@ Usage of ./benchmarks.exe:
 
 Run `benchmarks.exe` on Windows:
 
-```powershell
+```bash
 > ./benchmarks.exe
 =================================================================
  Go CPU Float64 Benchmark Tool (v0.2.0)
